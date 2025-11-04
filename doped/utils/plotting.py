@@ -205,28 +205,47 @@ def _plot_formation_energy_lines(
 
 
 def _add_band_edges_and_axis_limits(ax, band_gap, xlim, ylim, fermi_level=None):
-    ax.imshow(
-        [(0, 1), (0, 1)],
-        cmap=plt.cm.Blues,
-        extent=(xlim[0], 0, -50, 100),
-        vmin=0,
-        vmax=3,
-        interpolation="bicubic",
-        rasterized=True,
-        aspect="auto",
-        zorder=0,
-    )
+    # ax.imshow(
+    #     [(0, 1), (0, 1)],
+    #     cmap=plt.cm.Blues,
+    #     extent=(xlim[0], 0, -50, 100),
+    #     vmin=0,
+    #     vmax=3,
+    #     interpolation="bicubic",
+    #     rasterized=True,
+    #     aspect="auto",
+    #     zorder=0,
+    # )
+    #
+    # ax.imshow(
+    #     [(1, 0), (1, 0)],
+    #     cmap=plt.cm.Oranges,
+    #     extent=(band_gap, xlim[1], -50, 100),
+    #     vmin=0,
+    #     vmax=3,
+    #     interpolation="bicubic",
+    #     rasterized=True,
+    #     aspect="auto",
+    #     zorder=0,
+    # )
 
-    ax.imshow(
-        [(1, 0), (1, 0)],
-        cmap=plt.cm.Oranges,
-        extent=(band_gap, xlim[1], -50, 100),
-        vmin=0,
-        vmax=3,
-        interpolation="bicubic",
-        rasterized=True,
-        aspect="auto",
-        zorder=0,
+    ax.fill_between(
+        x=[xlim[0], 0],
+        y1=ylim[0],
+        y2=ylim[1],
+        alpha=0.25,
+        hatch="/",
+        color="#e3f2fdff",
+        edgecolor="#64B5F6",
+    )
+    ax.fill_between(
+        x=[band_gap, xlim[1]],
+        y1=ylim[0],
+        y2=ylim[1],
+        alpha=0.25,
+        hatch="/",
+        color="#FCE4EC",
+        edgecolor="#F48FB1",
     )
 
     ax.set_xlim(xlim)
