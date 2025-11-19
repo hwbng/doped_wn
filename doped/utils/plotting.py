@@ -250,7 +250,7 @@ def _add_band_edges_and_axis_limits(ax, band_gap, xlim, ylim, fermi_level=None):
 
     ax.set_xlim(xlim)
     # dashed line for E_formation = 0 in case ymin < 0
-    ax.plot([xlim[0], xlim[1]], [0, 0], c="k", ls="--", alpha=0.7)
+    # ax.plot([xlim[0], xlim[1]], [0, 0], c="k", ls="--", alpha=0.7)
     ax.set_ylim(ylim)
 
     if fermi_level is not None:
