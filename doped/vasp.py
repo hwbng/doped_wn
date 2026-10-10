@@ -610,6 +610,7 @@ class DefectDictSet(DopedDictSet):
         self,
         structure: Structure,
         charge_state: int = 0,
+        custom_set: str | None = None,
         user_incar_settings: dict | None = None,
         user_kpoints_settings: dict | Kpoints | None = None,
         user_potcar_functional: str = "PBE",
@@ -624,6 +625,9 @@ class DefectDictSet(DopedDictSet):
             charge_state (int):
                 Charge of the defect (to set ``NELECT`` -- total number of
                 electrons).
+            custom_set (str):
+                Path to a .yaml file containing custom INCAR settings
+                (in place of the default ``DefectRelaxSet`` + ``HSESet``).
             user_incar_settings (dict):
                 Dictionary of user ``INCAR`` settings (AEXX, NCORE etc.) to
                 override default settings. Highly recommended to look at output
@@ -660,13 +664,24 @@ class DefectDictSet(DopedDictSet):
         custom_user_incar_settings = user_incar_settings or {}
 
         # get base config and set EDIFF
-        relax_set = copy.deepcopy(default_defect_relax_set)
+        if custom_set:
+            if os.path.exists(custom_set):
+                relax_set = loadfn(custom_set)
+            elif os.path.exists(os.path.join(_MODULE_DIR, custom_set)):
+                relax_set = loadfn(os.path.join(_MODULE_DIR, custom_set))
+            else:
+                raise FileNotFoundError(f"Custom set {custom_set} not found.")
+            warnings.warn(f"Overriding default VASP sets with {custom_set}. "
+                          f"Remember to set ICORELEVEL=0 if using the Kumagai-Oba (eFNV) anisotropic charge correction scheme"
+                          f"and LVHAR=True for the Freysoldt (FNV) correction scheme")
+        else:
+            relax_set = copy.deepcopy(default_defect_relax_set)
 
-        lhfcalc = (
-            True if user_incar_settings is None else user_incar_settings.get("LHFCALC", True)
-        )  # True (hybrid) by default
-        if lhfcalc or (isinstance(lhfcalc, str) and lhfcalc.lower().startswith("t")):
-            relax_set = deep_dict_update(relax_set, default_HSE_set)  # HSE set is just INCAR settings
+            lhfcalc = (
+                True if user_incar_settings is None else user_incar_settings.get("LHFCALC", True)
+            )  # True (hybrid) by default
+            if lhfcalc or (isinstance(lhfcalc, str) and lhfcalc.lower().startswith("t")):
+                relax_set = deep_dict_update(relax_set, default_HSE_set)  # HSE set is just INCAR settings
 
         input_user_incar_settings = user_incar_settings or {}
         relax_set["INCAR"].update(input_user_incar_settings)
