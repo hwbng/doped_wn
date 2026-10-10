@@ -194,6 +194,7 @@ class DopedDictSet(VaspInputSet):
         auto_kpar: bool = True,
         poscar_comment: str | None = None,
         charge_state: int = 0,
+        max_ediff: float | None = None,
         **kwargs,
     ):
         r"""
@@ -244,6 +245,11 @@ class DopedDictSet(VaspInputSet):
                 be thrown for ``INCAR`` write attempts without ``POTCAR``
                 information -- where ``NELECT`` cannot be set. Default is 0
                 (neutral).
+            max_ediff (float):
+                Maximum ``EDIFF`` (eV) when setting ``EDIFF`` from
+                ``EDIFF_PER_ATOM`` (in ``user_incar_settings``).
+                Default is ``None``; ``EDIFF`` is capped at 1e-4 eV if
+                ``EDIFF_PER_ATOM`` is the default value, otherwise no cap.
             **kwargs:
                 Additional kwargs to pass to |VaspInputSet|.
         """
@@ -253,27 +259,21 @@ class DopedDictSet(VaspInputSet):
         self.charge_state = charge_state
 
         if user_incar_settings is not None:
+            user_incar_settings = dict(user_incar_settings)  # copy, to not edit input dict
             if "EDIFF_PER_ATOM" in user_incar_settings:
                 ediff_per_atom = user_incar_settings.pop("EDIFF_PER_ATOM")  # pop un-used tag
-                ediff = scaled_ediff(
-                    len(structure),
-                    ediff_per_atom=ediff_per_atom,
-                    # only cap ``EDIFF`` when using the default ``EDIFF_PER_ATOM``; otherwise user setting:
-                    max_ediff=(
-                        1e-4 if ediff_per_atom == default_relax_set["INCAR"]["EDIFF_PER_ATOM"] else np.inf
-                    ),
-                )
+                if "EDIFF" in user_incar_settings:
+                    warnings.warn(
+                        "EDIFF_PER_ATOM and EDIFF both set in user_incar_settings. "
+                        "EDIFF_PER_ATOM will be used.",
+                        BadIncarWarning,
+                    )
+                ediff = scaled_ediff(len(structure), ediff_per_atom=ediff_per_atom, max_ediff=max_ediff)
                 if ediff > 1e-3:
                     warnings.warn(
                         f"EDIFF_PER_ATOM was set to {ediff_per_atom:.2e} eV/atom, which gives an "
                         f"EDIFF of {ediff:.2e} eV here. This is a very large EDIFF for VASP, and "
                         f"may cause convergence issues. Please check your INCAR settings.",
-                        BadIncarWarning,
-                    )
-                if "EDIFF" in user_incar_settings:
-                    warnings.warn(
-                        "EDIFF_PER_ATOM and EDIFF both set in user_incar_settings. "
-                        "EDIFF_PER_ATOM will be used.",
                         BadIncarWarning,
                     )
                 user_incar_settings["EDIFF"] = ediff
@@ -616,6 +616,7 @@ class DefectDictSet(DopedDictSet):
         user_potcar_functional: str = "PBE",
         user_potcar_settings: dict | None = None,
         poscar_comment: str | None = None,
+        max_ediff: float | None = None,
         **kwargs,
     ):
         r"""
@@ -656,6 +657,11 @@ class DefectDictSet(DopedDictSet):
                 structure formula and charge state (``DefectRelaxSet`` instead
                 passes down the defect name, fractional coordinates of the
                 initial site and charge state).
+            max_ediff (float):
+                Maximum ``EDIFF`` (eV) when setting ``EDIFF`` from
+                ``EDIFF_PER_ATOM`` (in ``user_incar_settings`` or
+                ``custom_set``). Default is ``None``; ``EDIFF`` is capped at 1e-4 eV if
+                ``EDIFF_PER_ATOM`` is the default value, otherwise no cap.
             **kwargs:
                 Additional kwargs to pass to |VaspInputSet|.
         """
@@ -686,7 +692,11 @@ class DefectDictSet(DopedDictSet):
         input_user_incar_settings = user_incar_settings or {}
         relax_set["INCAR"].update(input_user_incar_settings)
         if "EDIFF_PER_ATOM" in input_user_incar_settings:
-            relax_set["INCAR"].pop("EDIFF")  # remove base EDIFF setting and use input EDIFF_PER_ATOM
+            # remove base EDIFF and use input EDIFF_PER_ATOM (if user also set EDIFF, DopedDictSet warns)
+            if "EDIFF" not in input_user_incar_settings:
+                relax_set["INCAR"].pop("EDIFF", None)
+        elif "EDIFF" in input_user_incar_settings:
+            relax_set["INCAR"].pop("EDIFF_PER_ATOM", None)  # user EDIFF overrides base EDIFF_PER_ATOM
 
         # if "length" in user kpoint settings then pop reciprocal_density and use length instead
         if user_kpoints_settings is not None and (
@@ -699,15 +709,22 @@ class DefectDictSet(DopedDictSet):
         super(self.__class__, self).__init__(
             structure,
             user_incar_settings=relax_set["INCAR"],
-            user_kpoints_settings=user_kpoints_settings or relax_set["KPOINTS"] or {},
+            user_kpoints_settings=user_kpoints_settings or relax_set.get("KPOINTS"),
             user_potcar_functional=user_potcar_functional,
             user_potcar_settings=user_potcar_settings,
             force_gamma=kwargs.pop("force_gamma", True),  # force gamma-centred k-points by default
             poscar_comment=self.poscar_comment,
             charge_state=charge_state,
+            max_ediff=max_ediff,
             **kwargs,
         )
-        self.user_incar_settings = custom_user_incar_settings
+        self.user_incar_settings = dict(custom_user_incar_settings)  # copy, to not edit input dict
+        if "EDIFF_PER_ATOM" in self.user_incar_settings:
+            # pymatgen re-applies ``user_incar_settings`` over the computed ``EDIFF`` (and would write
+            # ``EDIFF_PER_ATOM`` to the ``INCAR``), so remove both to ensure the ``EDIFF_PER_ATOM``-derived
+            # ``EDIFF`` is used (as warned) and the non-VASP ``EDIFF_PER_ATOM`` tag isn't written
+            self.user_incar_settings.pop("EDIFF_PER_ATOM")
+            self.user_incar_settings.pop("EDIFF", None)
         self.user_potcar_settings = user_potcar_settings
 
     @property
@@ -765,7 +782,7 @@ class DefectDictSet(DopedDictSet):
         )
 
 
-def scaled_ediff(natoms: int, ediff_per_atom: float = 2e-7, max_ediff: float = 1e-4) -> float:
+def scaled_ediff(natoms: int, ediff_per_atom: float = 2e-7, max_ediff: float | None = None) -> float:
     """
     Returns a scaled ``EDIFF`` value for VASP calculations, based on the number
     of atoms in the structure.
@@ -774,12 +791,20 @@ def scaled_ediff(natoms: int, ediff_per_atom: float = 2e-7, max_ediff: float = 1
         natoms (int): Number of atoms in the structure.
         ediff_per_atom (float):
             Per-atom ``EDIFF`` in eV. Default is 2e-7 (1e-5 per 50 atoms).
-        max_ediff (float): Maximum ``EDIFF`` value. Default is 1e-4 eV.
+        max_ediff (float):
+            Maximum ``EDIFF`` value. Default is ``None``, which caps at 1e-4 eV
+            if ``ediff_per_atom`` is the default value, otherwise no cap.
 
     Returns:
         float: Scaled ``EDIFF`` value.
     """
     ediff = float(f"{natoms * ediff_per_atom:.1g}")
+    if max_ediff is None:
+        max_ediff = 1e-4 if ediff_per_atom == default_relax_set["INCAR"]["EDIFF_PER_ATOM"] else np.inf
+    if max_ediff < ediff:
+        warnings.warn(
+            f"Scaled EDIFF_PER_ATOM is {ediff:.2e} eV, using MAX_EDIFF {max_ediff:.2e} eV instead"
+        )
     return min(ediff, max_ediff)
 
 

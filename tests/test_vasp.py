@@ -15,6 +15,7 @@ from threading import Thread
 
 import numpy as np
 import pytest
+import yaml
 from ase.build import bulk, make_supercell
 from monty.serialization import loadfn
 from pymatgen.io.vasp.inputs import BadIncarWarning, Incar, Kpoints, Poscar, Potcar
@@ -38,6 +39,7 @@ from doped.vasp import (
     _kspacing_kpts,
     default_defect_relax_set,
     default_potcar_dict,
+    default_relax_set,
     singlepoint_incar_settings,
 )
 
@@ -473,6 +475,185 @@ class DefectDictSetTest(unittest.TestCase):
             incar = DopedDictSet(supercell, user_incar_settings={"KSPACING": 0.6, "KPAR": 2}).incar
         assert incar["KPAR"] == 1  # 0.6 Å⁻¹ > |b|, so the predicted mesh is Γ-only
         assert any("Γ-only (i.e. only one kpoint), so KPAR is being set to 1" in str(i.message) for i in w)
+
+    def test_ediff_and_max_ediff(self):
+        """
+        Test ``EDIFF``/``EDIFF_PER_ATOM`` handling and the ``max_ediff`` cap
+        in ``DefectDictSet``.
+
+        Expected behaviour:
+        - default ``DefectDictSet``: ``EDIFF = 1e-5``, not affected by ``max_ediff``
+        - ``EDIFF_PER_ATOM`` is set : ``EDIFF = natoms * EDIFF_PER_ATOM`` (1 s.f.), capped by ``max_ediff``
+        - explicit ``EDIFF`` in ``user_incar_settings``: used as-is, not affected by ``max_ediff``
+        - both ``EDIFF`` and ``EDIFF_PER_ATOM``: warning, ``EDIFF_PER_ATOM`` used
+        - ``EDIFF_PER_ATOM`` is never written to the ``INCAR``
+        - input ``user_incar_settings`` dict is not modified
+        """
+
+        struct = self.prim_cdte.copy()
+        natoms = len(struct)
+
+        def test_incar(user_incar_settings, **kwargs):
+            """
+            Generate a ``DefectDictSet`` and return its ``INCAR`` and any
+            warnings raised.
+            """
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                incar = DefectDictSet(
+                    struct.copy(), 0, user_incar_settings=user_incar_settings, **kwargs
+                ).incar
+            assert "EDIFF_PER_ATOM" not in incar
+            return incar, w
+
+        def warned(w, text):
+            return any(text in str(i.message) for i in w)
+
+        # default EDIFF, not affected by max_ediff
+        assert test_incar(user_incar_settings={})[0]["EDIFF"] == 1e-5
+        # max_ediff is ignored if no EDIFF_PER_ATOM is set (fixed EDIFF of 1e-5 from DefectDictSet)
+        assert test_incar(user_incar_settings={}, max_ediff=1e-7)[0]["EDIFF"] == 1e-5
+
+        # EDIFF_PER_ATOM is respected, with no spurious warning from the default EDIFF
+        incar, w = test_incar(user_incar_settings={"EDIFF_PER_ATOM": 1e-6})
+        assert np.isclose(incar["EDIFF"], natoms * 1e-6)
+        assert not warned(w, "both set")
+
+        # max_ediff caps EDIFF_PER_ATOM-derived EDIFF, with a warning
+        incar, w = test_incar(user_incar_settings={"EDIFF_PER_ATOM": 1e-6}, max_ediff=1e-7)
+        assert np.isclose(incar["EDIFF"], 1e-7)
+        assert warned(w, "MAX_EDIFF")
+
+        # explicit EDIFF is respected, not capped by max_ediff
+        assert test_incar(user_incar_settings={"EDIFF": 1e-4})[0]["EDIFF"] == 1e-4
+        assert test_incar(user_incar_settings={"EDIFF": 1e-4}, max_ediff=1e-7)[0]["EDIFF"] == 1e-4
+
+        # both set: warns and EDIFF_PER_ATOM wins
+        user = {"EDIFF": 1e-4, "EDIFF_PER_ATOM": 1e-6}
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            dds = DefectDictSet(struct.copy(), user_incar_settings=user)
+        assert any("EDIFF_PER_ATOM and EDIFF both set" in str(i.message) for i in w)
+        assert np.isclose(dds.incar["EDIFF"], natoms * 1e-6)
+        # Ensure user_incar_settings is not modified
+        assert user == {"EDIFF": 1e-4, "EDIFF_PER_ATOM": 1e-6}
+
+        # same for DopedDictSet directly
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            dds = DopedDictSet(
+                struct.copy(), user_incar_settings=user, user_kpoints_settings={"reciprocal_density": 123}
+            )
+        assert np.isclose(dds.incar["EDIFF"], natoms * 1e-6)
+        assert user == {"EDIFF": 1e-4, "EDIFF_PER_ATOM": 1e-6}
+
+    def test_ediff_and_max_ediff_custom_set(self):
+        """
+        Test ``EDIFF_PER_ATOM`` / ``EDIFF`` / ``max_ediff`` handling when
+        these are set in a ``custom_set`` ``.yaml`` file.
+        """
+        struct = self.prim_cdte.copy()
+        natoms = len(struct)
+        custom_file = os.path.join(self.CdTe_data_dir, "custom_set_ediff_test.yaml")
+        self.addCleanup(if_present_rm, custom_file)
+
+        def test_incar(user_incar_settings, custom_incar=None, **kwargs):
+            """
+            Write ``custom_incar`` to the ``custom_set`` file, generate a
+            ``DefectDictSet`` and return its ``INCAR`` and any warnings raised.
+            """
+            with open(custom_file, "w") as f:
+                f.write(yaml.safe_dump({"INCAR": custom_incar, "KPOINTS": {"reciprocal_density": 100}}))
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                incar = DefectDictSet(
+                    struct.copy(),
+                    0,
+                    custom_set=custom_file,
+                    user_incar_settings=user_incar_settings,
+                    **kwargs,
+                ).incar
+            assert "EDIFF_PER_ATOM" not in incar
+            assert not any("Cannot find EDIFF_PER_ATOM" in str(i.message) for i in w)
+            return incar, w
+
+        # EDIFF_PER_ATOM in custom_set, with and without max_ediff
+        incar, _w = test_incar(user_incar_settings={}, custom_incar={"EDIFF_PER_ATOM": 1e-6})
+        assert np.isclose(incar["EDIFF"], natoms * 1e-6)
+        incar, w = test_incar(user_incar_settings={}, custom_incar={"EDIFF_PER_ATOM": 1e-6}, max_ediff=1e-7)
+        assert np.isclose(incar["EDIFF"], 1e-7)
+        assert any("MAX_EDIFF" in str(i.message) for i in w)
+
+        # fixed EDIFF in custom_set is not capped by max_ediff
+        incar, _w = test_incar(user_incar_settings={}, custom_incar={"EDIFF": 1e-4}, max_ediff=1e-7)
+        assert incar["EDIFF"] == 1e-4
+
+        # user EDIFF overrides custom_set EDIFF_PER_ATOM (and is not capped)
+        incar, _w = test_incar(user_incar_settings={"EDIFF": 1e-5}, custom_incar={"EDIFF_PER_ATOM": 1e-6}, max_ediff=1e-7)
+        assert incar["EDIFF"] == 1e-5
+
+        # user EDIFF_PER_ATOM overrides custom_set EDIFF
+        incar, _w = test_incar(user_incar_settings={"EDIFF_PER_ATOM": 1e-6}, custom_incar={"EDIFF": 1e-4})
+        assert np.isclose(incar["EDIFF"], natoms * 1e-6)
+
+    def test_ediff_capped_for_large_structures(self):
+        """
+        Without a ``custom_set``, the default-``EDIFF_PER_ATOM``-derived
+        ``EDIFF`` is capped at ``1e-4`` for large structures, and an explicit
+        ``max_ediff`` overrides ``EDIFF_PER_ATOM``.
+        """
+        struct = self.prim_cdte.copy()
+        struct.make_supercell([10, 10, 10])  # 2000 atoms: 2000 * 2e-7 = 4e-4 > 1e-4
+        default_ediff_per_atom = default_relax_set["INCAR"]["EDIFF_PER_ATOM"]
+        assert len(struct) * default_ediff_per_atom > 1e-4
+
+        # default EDIFF_PER_ATOM -> capped at 1e-4
+        incar = DefectDictSet(struct.copy(), 0, user_incar_settings={"EDIFF_PER_ATOM": default_ediff_per_atom}).incar
+        assert incar["EDIFF"] == 1e-4
+
+        # non-default EDIFF_PER_ATOM isn't capped (user setting)...
+        incar = DefectDictSet(struct.copy(), 0, user_incar_settings={"EDIFF_PER_ATOM": 3e-7}).incar
+        assert np.isclose(incar["EDIFF"], 6e-4)
+
+        # ...unless max_ediff is set, which overrides EDIFF_PER_ATOM
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            incar = DefectDictSet(
+                struct.copy(), 0, user_incar_settings={"EDIFF_PER_ATOM": 1e-6}, max_ediff=1e-4
+            ).incar
+        assert incar["EDIFF"] == 1e-4
+        assert any("MAX_EDIFF" in str(i.message) for i in w)
+
+        # explicit max_ediff replaces (rather than combines with) the built-in cap for default EDIFF_PER_ATOM
+        incar = DefectDictSet(
+            struct.copy(), 0, user_incar_settings={"EDIFF_PER_ATOM": default_ediff_per_atom}, max_ediff=1e-3
+        ).incar
+        assert np.isclose(incar["EDIFF"], 4e-4)
+
+    def test_user_kpoints_settings_reciprocal_density(self):
+        """
+        Test that ``user_kpoints_settings={"reciprocal_density": 64}`` is
+        respected by ``DefectDictSet`` (vs. the default of 100), with and
+        without ``custom_set``.
+        """
+        struct = self.prim_cdte.copy()
+        expected = Kpoints.automatic_density_by_vol(struct, 64, force_gamma=True).kpts
+        default = Kpoints.automatic_density_by_vol(struct, 100, force_gamma=True).kpts
+
+        dds = DefectDictSet(struct.copy(), 0, user_kpoints_settings={"reciprocal_density": 64})
+        assert dds.kpoints.kpts == expected
+        assert dds.kpoints.style.name == "Gamma"  # force_gamma default
+        assert expected != default
+        assert DefectDictSet(struct.copy(), 0).kpoints.kpts == default
+        assert dds.user_kpoints_settings == {"reciprocal_density": 64}
+
+        # input dict not modified, and the equivalent via DopedDictSet matches
+        user_kpts = {"reciprocal_density": 64}
+        DefectDictSet(struct.copy(), 0, user_kpoints_settings=user_kpts)
+        assert (
+            DopedDictSet(struct.copy(), user_kpoints_settings={"reciprocal_density": 64}).kpoints.kpts
+            == expected
+        )
 
     def test_initialisation_for_all_structs(self):
         """
