@@ -518,6 +518,11 @@ class DefectDictSetTest(unittest.TestCase):
         incar, w = test_incar(user_incar_settings={"EDIFF_PER_ATOM": 1e-6})
         assert np.isclose(incar["EDIFF"], natoms * 1e-6)
         assert not warned(w, "both set")
+        # user_incar_settings (re-applied by pymatgen) holds the resolved EDIFF, not EDIFF_PER_ATOM
+        dds = DefectDictSet(struct.copy(), 0, user_incar_settings={"EDIFF_PER_ATOM": 1e-6, "EDIFF": 1e-3})
+        assert "EDIFF_PER_ATOM" not in dds.user_incar_settings
+        assert np.isclose(dds.user_incar_settings["EDIFF"], natoms * 1e-6)
+        assert np.isclose(dds.incar["EDIFF"], natoms * 1e-6)
 
         # max_ediff caps EDIFF_PER_ATOM-derived EDIFF, with a warning
         incar, w = test_incar(user_incar_settings={"EDIFF_PER_ATOM": 1e-6}, max_ediff=1e-7)

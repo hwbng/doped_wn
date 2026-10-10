@@ -720,11 +720,10 @@ class DefectDictSet(DopedDictSet):
         )
         self.user_incar_settings = dict(custom_user_incar_settings)  # copy, to not edit input dict
         if "EDIFF_PER_ATOM" in self.user_incar_settings:
-            # pymatgen re-applies ``user_incar_settings`` over the computed ``EDIFF`` (and would write
-            # ``EDIFF_PER_ATOM`` to the ``INCAR``), so remove both to ensure the ``EDIFF_PER_ATOM``-derived
-            # ``EDIFF`` is used (as warned) and the non-VASP ``EDIFF_PER_ATOM`` tag isn't written
+            # pymatgen re-applies ``user_incar_settings`` over the computed ``INCAR``, so replace the
+            # (non-VASP) ``EDIFF_PER_ATOM`` with the ``EDIFF`` computed from it (incl. ``max_ediff`` cap)
             self.user_incar_settings.pop("EDIFF_PER_ATOM")
-            self.user_incar_settings.pop("EDIFF", None)
+            self.user_incar_settings["EDIFF"] = self.config_dict["INCAR"]["EDIFF"]
         self.user_potcar_settings = user_potcar_settings
 
     @property
