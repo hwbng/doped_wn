@@ -610,12 +610,12 @@ class DefectDictSet(DopedDictSet):
         self,
         structure: Structure,
         charge_state: int = 0,
-        custom_set: str | None = None,
         user_incar_settings: dict | None = None,
         user_kpoints_settings: dict | Kpoints | None = None,
         user_potcar_functional: str = "PBE",
         user_potcar_settings: dict | None = None,
         poscar_comment: str | None = None,
+        custom_set: str | None = None,
         **kwargs,
     ):
         r"""
@@ -625,9 +625,6 @@ class DefectDictSet(DopedDictSet):
             charge_state (int):
                 Charge of the defect (to set ``NELECT`` -- total number of
                 electrons).
-            custom_set (str):
-                Path to a .yaml file containing custom INCAR settings
-                (in place of the default ``DefectRelaxSet`` + ``HSESet``).
             user_incar_settings (dict):
                 Dictionary of user ``INCAR`` settings (AEXX, NCORE etc.) to
                 override default settings. Highly recommended to look at output
@@ -656,6 +653,9 @@ class DefectDictSet(DopedDictSet):
                 structure formula and charge state (``DefectRelaxSet`` instead
                 passes down the defect name, fractional coordinates of the
                 initial site and charge state).
+            custom_set (str):
+                Path to a .yaml file containing custom INCAR settings
+                (in place of the default ``DefectRelaxSet`` + ``HSESet``).
             **kwargs:
                 Additional kwargs to pass to |VaspInputSet|.
         """
@@ -671,9 +671,11 @@ class DefectDictSet(DopedDictSet):
                 relax_set = loadfn(os.path.join(_MODULE_DIR, custom_set))
             else:
                 raise FileNotFoundError(f"Custom set {custom_set} not found.")
-            warnings.warn(f"Overriding default VASP sets with {custom_set}. "
-                          f"Remember to set ICORELEVEL=0 if using the Kumagai-Oba (eFNV) anisotropic charge correction scheme"
-                          f"and LVHAR=True for the Freysoldt (FNV) correction scheme")
+            warnings.warn(
+                f"Overriding default VASP sets with {custom_set}. Remember to set ICORELEVEL=0 if using "
+                f"the Kumagai-Oba (eFNV) anisotropic charge correction scheme, and LVHAR=True for the "
+                f"Freysoldt (FNV) correction scheme."
+            )
         else:
             relax_set = copy.deepcopy(default_defect_relax_set)
 
@@ -686,15 +688,16 @@ class DefectDictSet(DopedDictSet):
         input_user_incar_settings = user_incar_settings or {}
         relax_set["INCAR"].update(input_user_incar_settings)
         if "EDIFF_PER_ATOM" in input_user_incar_settings:
-            relax_set["INCAR"].pop("EDIFF")  # remove base EDIFF setting and use input EDIFF_PER_ATOM
+            relax_set["INCAR"].pop("EDIFF", None)  # remove base EDIFF setting and use input EDIFF_PER_ATOM
 
+        relax_set.setdefault("KPOINTS", {})  # custom sets may omit KPOINTS
         # if "length" in user kpoint settings then pop reciprocal_density and use length instead
         if user_kpoints_settings is not None and (
             "length" in user_kpoints_settings
             if isinstance(user_kpoints_settings, dict)
             else "length" in user_kpoints_settings.as_dict()
         ):
-            relax_set["KPOINTS"].pop("reciprocal_density")
+            relax_set["KPOINTS"].pop("reciprocal_density", None)
 
         super(self.__class__, self).__init__(
             structure,
